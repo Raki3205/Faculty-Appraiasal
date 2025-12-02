@@ -1,0 +1,105 @@
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // --------------------------------------------------------------------------
+    // Helper Functions
+    // --------------------------------------------------------------------------
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function getUserData(userId) {
+        return get(/databases/$(database)/documents/users/$(userId)).data;
+    }
+
+    function getFacultyProfile(userId) {
+        return get(/databases/$(database)/documents/faculty_profiles/$(userId)).data;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && getUserData(request.auth.uid).role == 'Principal';
+    }
+
+    function isHOD() {
+        return isSignedIn() && getUserData(request.auth.uid).role == 'HOD';
+    }
+
+    function getHODDepartment() {
+        return getFacultyProfile(request.auth.uid).partA.info.department;
+    }
+
+    // --------------------------------------------------------------------------
+    // Collection Rules
+    // --------------------------------------------------------------------------
+
+    match /users/{userId} {
+      // Admins and owners can read. HODs can read anyone (for basic info).
+      allow get: if isAdmin() || isOwner(userId) || isHOD();
+      // Only admins can list all users.
+      allow list: if isAdmin();
+      // Owners can create their own record on signup.
+      allow create: if isOwner(userId);
+      // Owners and admins can update.
+      allow update: if isOwner(userId) || isAdmin();
+      // Owners and admins can delete.
+      allow delete: if isOwner(userId) || isAdmin();
+    }
+
+    match /faculty_profiles/{facultyProfileId} {
+      // The profile owner, an admin, or an HOD of the same department can read.
+      allow get: if isOwner(get(/databases/$(database)/documents/faculty_profiles/$(facultyProfileId)).data.userId) 
+                  || isAdmin() 
+                  || (isHOD() && getHODDepartment() == getFacultyProfile(facultyProfileId).partA.info.department);
+      
+      // Only Admins can list all profiles for reporting.
+      allow list: if isAdmin();
+
+      // The user can create their own profile.
+      allow create: if isOwner(request.resource.data.userId);
+      
+      // The user can update their own profile, or an Admin can.
+      allow update: if isOwner(get(/databases/$(database)/documents/faculty_profiles/$(facultyProfileId)).data.userId) || isAdmin();
+      
+      // Only admins should delete profiles.
+      allow delete: if isAdmin();
+    }
+
+    match /appraisals/{appraisalId} {
+      // The appraisal owner, an admin, or an HOD from the same department can read it.
+      allow get: if isOwner(resource.data.userId) 
+                  || isAdmin()
+                  || (isHOD() && getHODDepartment() == resource.data.appraisalData.partA.info.department);
+
+      // LIST rule for queries:
+      // 1. Admins can list all.
+      // 2. Users can list their OWN appraisals (e.g., for history page).
+      // 3. HODs can list appraisals from THEIR department.
+      allow list: if isAdmin() 
+                    || (isSignedIn() && request.query.filters.size() == 1 && request.query.filters[0].field.stringValue() == 'userId' && request.query.filters[0].value.stringValue() == request.auth.uid)
+                    || (isHOD() && request.query.filters.size() > 0 && request.query.filters[0].field.stringValue() == 'appraisalData.partA.info.department' && request.query.filters[0].value.stringValue() == getHODDepartment());
+
+      // A user can create an appraisal for themselves.
+      allow create: if isOwner(request.resource.data.userId);
+
+      // An appraisal can be updated by:
+      // 1. The owner, if the status is not locked ('Draft', 'Rejected').
+      // 2. An HOD of the same department.
+      // 3. An Admin.
+      allow update: if (isOwner(resource.data.userId) && (resource.data.status == 'Draft' || resource.data.status == 'Rejected'))
+                      || (isHOD() && getHODDepartment() == resource.data.appraisalData.partA.info.department)
+                      || isAdmin();
+
+      // Only an admin can delete an appraisal record.
+      allow delete: if isAdmin();
+    }
+  }
+}
+
+    
